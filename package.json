@@ -1,0 +1,24 @@
+{
+  "name": "road-rush",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vite-node tools/selftest.mjs",
+    "capture": "xvfb-run -a node tools/capture.mjs",
+    "mechanics": "xvfb-run -a node tools/mechanics.mjs",
+    "routes": "xvfb-run -a node tools/terrains.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.62.1",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.5",
+    "vite-node": "^6.0.0"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^7.44.0"
+  }
+}
