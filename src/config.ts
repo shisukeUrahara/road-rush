@@ -4,6 +4,21 @@
 export const VIEW_W = 256;
 export const VIEW_H = 240;
 
+/**
+ * Pixels drawn per view unit. Gameplay math always stays in the 256x240 view
+ * space; this only changes how finely that space is rasterised.
+ *
+ * Kept at 1. The cost is quadratic in this scale, and measured here it dropped
+ * the game from ~47fps to ~33fps at 2x and ~20fps at 4x — slow enough that the
+ * crash state machine skipped its skid phase, which the mechanics test caught.
+ * Raise it only alongside a frame-rate check: `npm run capture` fails when the
+ * game gets too slow to hit its own states.
+ *
+ * Sprite sharpness does not depend on this. The artwork is authored well above
+ * its draw size and downscaled by the canvas, so it stays crisp at 1x.
+ */
+export const RENDER_SCALE = 1;
+
 /** Where the player's car sits on screen (y grows downward). */
 export const PLAYER_SCREEN_Y = VIEW_H - 46;
 

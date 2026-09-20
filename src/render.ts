@@ -1,7 +1,7 @@
 // Everything is painted at 256x240 into an offscreen canvas; Babylon puts that
 // canvas on screen as a nearest-neighbour texture (see display.ts).
 
-import { PLAYER_SCREEN_Y, VIEW_H, VIEW_W } from "./config";
+import { PLAYER_SCREEN_Y, RENDER_SCALE, VIEW_H, VIEW_W } from "./config";
 import { LANES, roadAt } from "./road";
 import type { Terrain } from "./terrains";
 import type { Actor } from "./traffic";
@@ -18,12 +18,19 @@ export class Renderer {
 
   constructor(private sprites: SpriteSheet) {
     this.canvas = document.createElement("canvas");
-    this.canvas.width = VIEW_W;
-    this.canvas.height = VIEW_H;
+    // The backing canvas is RENDER_SCALE times larger than the view, but every
+    // draw call still works in view units: the transform below does the
+    // conversion once, so no drawing code needs to know about the scale.
+    this.canvas.width = VIEW_W * RENDER_SCALE;
+    this.canvas.height = VIEW_H * RENDER_SCALE;
     const ctx = this.canvas.getContext("2d", { alpha: false });
     if (!ctx) throw new Error("2D canvas unavailable");
     this.ctx = ctx;
-    this.ctx.imageSmoothingEnabled = false;
+    this.ctx.scale(RENDER_SCALE, RENDER_SCALE);
+    // Smoothing on: the artwork is now drawn above 1:1, so interpolation
+    // helps it rather than blurring hand-placed pixels.
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.imageSmoothingQuality = "high";
   }
 
   clear(color = "#000000"): void {
@@ -46,16 +53,24 @@ export class Renderer {
     const p = terrain.palette;
     const scale = FIELD_W / VIEW_W;
 
+    // Road rows stay at view resolution. Sub-dividing them multiplied fillRect
+    // calls by RENDER_SCALE and halved the frame rate, while buying nothing:
+    // these are flat horizontal bands, so a finer vertical step cannot add
+    // detail. Horizontal edges are already smooth, because the left/right
+    // coordinates are fractional and the canvas is no longer quantised to
+    // whole view units.
+    const STEP = 1;
+
     // Ground: alternating horizontal bands so motion is readable even on grass.
-    for (let y = 0; y < VIEW_H; y++) {
+    for (let y = 0; y < VIEW_H; y += STEP) {
       const d = playerDistance + (PLAYER_SCREEN_Y - y);
       ctx.fillStyle = Math.floor(d / 16) % 2 === 0 ? p.ground : p.groundAlt;
-      ctx.fillRect(0, y, FIELD_W, 1);
+      ctx.fillRect(0, y, FIELD_W, STEP);
     }
 
     // Road surface + markings, row by row (the road curves, so per-row is
     // simplest and still cheap at this resolution).
-    for (let y = 0; y < VIEW_H; y++) {
+    for (let y = 0; y < VIEW_H; y += STEP) {
       const d = playerDistance + (PLAYER_SCREEN_Y - y);
       const shape = roadAt(terrain, d);
       const left = this.fx(shape.left);
@@ -63,30 +78,30 @@ export class Renderer {
 
       if (terrain.shoulder) {
         ctx.fillStyle = terrain.shoulder;
-        ctx.fillRect(Math.max(0, left - 10 * scale), y, 10 * scale, 1);
-        ctx.fillRect(right, y, Math.min(FIELD_W - right, 10 * scale), 1);
+        ctx.fillRect(Math.max(0, left - 10 * scale), y, 10 * scale, STEP);
+        ctx.fillRect(right, y, Math.min(FIELD_W - right, 10 * scale), STEP);
       }
 
       ctx.fillStyle = p.road;
-      ctx.fillRect(left, y, right - left, 1);
+      ctx.fillRect(left, y, right - left, STEP);
 
       // Edge stripes.
       ctx.fillStyle = p.roadEdge;
-      ctx.fillRect(left, y, 2, 1);
-      ctx.fillRect(right - 2, y, 2, 1);
+      ctx.fillRect(left, y, 2, STEP);
+      ctx.fillRect(right - 2, y, 2, STEP);
 
       // Barrier: dashed colour blocks so speed reads at the edge of the road.
       const barrierOn = Math.floor(d / 12) % 2 === 0;
       ctx.fillStyle = barrierOn ? p.barrier : p.barrierAlt;
-      ctx.fillRect(Math.max(0, left - 4), y, 4, 1);
-      ctx.fillRect(right, y, 4, 1);
+      ctx.fillRect(Math.max(0, left - 4), y, 4, STEP);
+      ctx.fillRect(right, y, 4, STEP);
 
       // Lane dashes.
       if (Math.floor(d / 14) % 2 === 0) {
         ctx.fillStyle = p.laneMark;
         for (let l = 1; l < LANES; l++) {
           const lx = left + ((right - left) / LANES) * l;
-          ctx.fillRect(lx - 1, y, 2, 1);
+          ctx.fillRect(lx - 1, y, 2, STEP);
         }
       }
     }
@@ -96,10 +111,8 @@ export class Renderer {
 
   /** Roadside props, positioned deterministically from their course distance. */
   private drawScenery(terrain: Terrain, playerDistance: number): void {
-    const p = terrain.palette;
     const spacing = 46;
     const first = Math.floor((playerDistance - 40) / spacing) * spacing;
-    const scale = FIELD_W / VIEW_W;
 
     for (let d = first; d < playerDistance + VIEW_H + 60; d += spacing) {
       const y = this.screenY(d, playerDistance);
@@ -116,81 +129,66 @@ export class Renderer {
         // Stagger the two sides so they don't look like a mirrored corridor.
         const yy = y + (side > 0 ? spacing / 2 : 0);
         if (yy < -40 || yy > VIEW_H + 40) continue;
-        this.drawProp(kind, x, yy, p, scale);
+        this.drawProp(kind, x, yy);
       }
     }
   }
 
-  private drawProp(
-    kind: string,
-    x: number,
-    y: number,
-    p: Terrain["palette"],
-    _scale: number,
-  ): void {
+  /** Soft ground shadow so a prop reads as standing on the ground. */
+  private propShadow(x: number, y: number, w: number, h: number): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = 0.26;
+    ctx.fillStyle = "#000000";
+    ctx.beginPath();
+    ctx.ellipse(x + w / 2 + 1.5, y + h - h * 0.12, w * 0.36, h * 0.13, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Props are all sprites now, so no palette is needed: their colour comes
+  // from the artwork rather than the terrain's palette.
+  private drawProp(kind: string, x: number, y: number): void {
     const ctx = this.ctx;
     switch (kind) {
+      // Both tree kinds use the generated canopy art. A soft elliptical shadow
+      // sits under it so the prop reads as standing on the ground rather than
+      // pasted onto it.
       case "tree":
-        // Drop shadow first, canopy over it: seen from above, the shadow falls
-        // toward the bottom of the screen.
-        ctx.fillStyle = "#000000";
-        ctx.fillRect(x + 4, y + 8, 10, 10);
-        ctx.fillStyle = p.detail;
-        ctx.fillRect(x + 2, y + 1, 12, 12);
-        ctx.fillRect(x, y + 4, 16, 6);
-        ctx.fillStyle = "#00e800";
-        ctx.fillRect(x + 4, y + 3, 5, 4);
+      case "pine": {
+        const s = this.sprites.tree;
+        this.propShadow(x, y, s.w, s.h);
+        ctx.drawImage(s.image, x, y, s.w, s.h);
         break;
-      case "pine":
-        ctx.fillStyle = "#000000";
-        ctx.fillRect(x + 5, y + 12, 10, 9);
-        ctx.fillStyle = p.detail;
-        for (let i = 0; i < 4; i++) ctx.fillRect(x + 6 - i * 2, y + 1 + i * 4, 4 + i * 4, 5);
+      }
+      case "palm": {
+        const s = this.sprites.palm;
+        this.propShadow(x, y, s.w, s.h);
+        ctx.drawImage(s.image, x, y, s.w, s.h);
         break;
-      case "palm":
-        ctx.fillStyle = p.detail;
-        ctx.fillRect(x + 1, y + 3, 15, 4);
-        ctx.fillRect(x + 4, y, 9, 4);
-        ctx.fillRect(x, y + 6, 5, 3);
-        ctx.fillRect(x + 12, y + 6, 5, 3);
-        ctx.fillStyle = "#503000";
-        ctx.fillRect(x + 7, y + 7, 3, 15);
+      }
+      case "house": {
+        const s = this.sprites.house;
+        this.propShadow(x, y, s.w, s.h);
+        ctx.drawImage(s.image, x, y, s.w, s.h);
         break;
-      case "house":
-        ctx.fillStyle = "#000000";
-        ctx.fillRect(x - 1, y - 1, 20, 20);
-        ctx.fillStyle = p.detailAlt;
-        ctx.fillRect(x, y, 18, 18);
-        ctx.fillStyle = "#d82800";
-        ctx.fillRect(x, y, 18, 6);
-        ctx.fillStyle = "#000000";
-        ctx.fillRect(x + 12, y + 8, 5, 8);
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(x + 3, y + 9, 5, 5);
+      }
+      case "girder": {
+        const s = this.sprites.girder;
+        ctx.drawImage(s.image, x, y, s.w, s.h);
         break;
-      case "girder":
-        ctx.fillStyle = "#000000";
-        ctx.fillRect(x + 2, y, 14, 22);
-        ctx.fillStyle = p.detailAlt;
-        ctx.fillRect(x + 4, y + 2, 10, 18);
-        ctx.fillStyle = "#787878";
-        ctx.fillRect(x + 6, y + 4, 6, 14);
+      }
+      case "rock": {
+        const s = this.sprites.rock;
+        this.propShadow(x, y, s.w, s.h);
+        ctx.drawImage(s.image, x, y, s.w, s.h);
         break;
-      case "rock":
-        ctx.fillStyle = "#000000";
-        ctx.fillRect(x + 2, y + 4, 14, 12);
-        ctx.fillStyle = "#9c9c9c";
-        ctx.fillRect(x + 3, y + 5, 12, 10);
-        ctx.fillStyle = "#585858";
-        ctx.fillRect(x + 5, y + 7, 6, 5);
+      }
+      case "wave": {
+        const s = this.sprites.wave;
+        ctx.drawImage(s.image, x, y, s.w, s.h);
         break;
-      case "wave":
-        ctx.fillStyle = p.detail;
-        ctx.fillRect(x, y + 6, 16, 3);
-        ctx.fillRect(x + 4, y + 11, 12, 2);
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(x + 2, y + 6, 6, 1);
-        break;
+      }
     }
   }
 
@@ -199,7 +197,7 @@ export class Renderer {
     if (y < -60 || y > VIEW_H + 60) return;
     const scale = FIELD_W / VIEW_W;
     const x = a.x * scale;
-    let img: HTMLCanvasElement;
+    let img;
     switch (a.kind) {
       case "yellow":
         img = this.sprites.yellow;
@@ -235,7 +233,7 @@ export class Renderer {
       // Flash so the pickup is unmistakable.
       ctx.globalAlpha = flashFrame % 8 < 4 ? 1 : 0.65;
     }
-    ctx.drawImage(img, Math.round(x - img.width / 2), Math.round(y - img.height / 2));
+    ctx.drawImage(img.image, x - img.w / 2, y - img.h / 2, img.w, img.h);
     ctx.globalAlpha = 1;
   }
 
@@ -250,10 +248,10 @@ export class Renderer {
       ctx.save();
       ctx.translate(px, PLAYER_SCREEN_Y);
       ctx.rotate(spin);
-      ctx.drawImage(img, -img.width / 2, -img.height / 2);
+      ctx.drawImage(img.image, -img.w / 2, -img.h / 2, img.w, img.h);
       ctx.restore();
     } else {
-      ctx.drawImage(img, Math.round(px - img.width / 2), Math.round(PLAYER_SCREEN_Y - img.height / 2));
+      ctx.drawImage(img.image, px - img.w / 2, PLAYER_SCREEN_Y - img.h / 2, img.w, img.h);
     }
   }
 
@@ -261,15 +259,17 @@ export class Renderer {
     const img = this.sprites.explosion[Math.min(frame, this.sprites.explosion.length - 1)];
     const scale = FIELD_W / VIEW_W;
     this.ctx.drawImage(
-      img,
-      Math.round(x * scale - img.width / 2),
-      Math.round(PLAYER_SCREEN_Y - img.height / 2),
+      img.image,
+      x * scale - img.w / 2,
+      PLAYER_SCREEN_Y - img.h / 2,
+      img.w,
+      img.h,
     );
   }
 
   drawMascot(x: number, y: number): void {
     const img = this.sprites.mascot;
-    this.ctx.drawImage(img, Math.round(x - img.width / 2), Math.round(y - img.height / 2));
+    this.ctx.drawImage(img.image, x - img.w / 2, y - img.h / 2, img.w, img.h);
   }
 
   /** Floating "+300" style popups. */

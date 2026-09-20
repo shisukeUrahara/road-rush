@@ -12,7 +12,7 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 
-import { VIEW_H, VIEW_W } from "./config";
+import { RENDER_SCALE, VIEW_H, VIEW_W } from "./config";
 
 export class Display {
   readonly engine: Engine;
@@ -22,7 +22,7 @@ export class Display {
   private camera: FreeCamera;
 
   constructor(
-    private hostCanvas: HTMLCanvasElement,
+    hostCanvas: HTMLCanvasElement,
     private source: HTMLCanvasElement,
   ) {
     this.engine = new Engine(hostCanvas, false, {
@@ -39,12 +39,16 @@ export class Display {
 
     this.quad = MeshBuilder.CreatePlane("screen", { width: VIEW_W, height: VIEW_H }, this.scene);
 
+    // The texture matches the renderer's backing canvas, not the view size —
+    // at view size the GPU would discard exactly the detail the raised render
+    // scale exists to produce. Trilinear, not nearest: the art is smooth now,
+    // so point sampling would only reintroduce jaggies.
     this.texture = new DynamicTexture(
       "screenTex",
-      { width: VIEW_W, height: VIEW_H },
+      { width: VIEW_W * RENDER_SCALE, height: VIEW_H * RENDER_SCALE },
       this.scene,
-      false,
-      Texture.NEAREST_SAMPLINGMODE,
+      true,
+      Texture.TRILINEAR_SAMPLINGMODE,
     );
     this.texture.wrapU = Texture.CLAMP_ADDRESSMODE;
     this.texture.wrapV = Texture.CLAMP_ADDRESSMODE;
@@ -78,13 +82,12 @@ export class Display {
     this.camera.orthoRight = halfW;
     this.camera.orthoTop = halfH;
     this.camera.orthoBottom = -halfH;
-    this.hostCanvas.style.imageRendering = "pixelated";
   }
 
   /** Copy this frame's pixels to the GPU. */
   present(): void {
     const ctx = this.texture.getContext() as CanvasRenderingContext2D;
-    ctx.clearRect(0, 0, VIEW_W, VIEW_H);
+    ctx.clearRect(0, 0, VIEW_W * RENDER_SCALE, VIEW_H * RENDER_SCALE);
     ctx.drawImage(this.source, 0, 0);
     this.texture.update(false);
     this.scene.render();
