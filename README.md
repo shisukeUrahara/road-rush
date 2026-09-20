@@ -162,7 +162,7 @@ not on frame rate.
 | `src/road.ts` | Road geometry as a function of distance |
 | `src/render.ts` | Paints the 256×240 field and its scenery |
 | `src/display.ts` | Babylon layer — pixel canvas onto a fullscreen quad |
-| `src/sprites.ts` | ASCII-grid pixel art compiled to canvases |
+| `src/sprites.ts` | Loads sprite PNGs and declares their draw sizes |
 | `src/font.ts` | 4×6 bitmap font |
 | `src/hud.ts` | Gauges and every menu screen |
 | `src/scores.ts` | The `localStorage` top ten |
@@ -171,14 +171,25 @@ not on frame rate.
 
 ## Implementation notes
 
-**No binary assets.** Every sprite is an ASCII grid painted pixel by pixel onto
-a canvas, all text uses a hand-built 4×6 bitmap font, and every sound is
-synthesized through WebAudio at runtime. The repository contains no images and
-no audio files.
+**Sprite art, with a fallback.** Vehicles, hazards and roadside props are PNGs
+under `public/sprites/`, generated with sprite-gen and sliced out of two grid
+sheets kept in `tools/sheets/`. Art is optional: every sprite falls back to a
+drawn placeholder, so a missing or still-loading file never blanks the game.
+Text still uses the hand-built 4×6 bitmap font and every sound is still
+synthesized through WebAudio, so there are no font or audio files.
+
+**Draw sizes are gameplay, not decoration.** Each sprite declares its size in
+view units in `src/sprites.ts`, matched to the pixel grids it replaced. The
+collision boxes in `src/config.ts` were tuned against those dimensions, so
+drawing wider art turns glancing contacts into head-on hits — the mechanics
+test catches exactly that.
 
 **Pixel-exact rendering.** The game paints a single 256×240 canvas, which
-Babylon uploads as a nearest-neighbour texture on a fullscreen orthographic
-quad. The result stays sharp and correctly proportioned at any window size.
+Babylon uploads onto a fullscreen orthographic quad. The result stays
+correctly proportioned at any window size. `RENDER_SCALE` in `src/config.ts`
+can rasterise that field more finely, but its cost is quadratic: measured here
+it took the game from ~47fps to ~20fps at 4×, slow enough that the crash state
+machine skipped its skid phase. Raise it only alongside a capture run.
 
 **The road is a function, not a list.** Its centre and width are computed
 directly from distance, so any point on the infinite course can be evaluated on
@@ -193,6 +204,18 @@ the passability test exercises.
 **Generous hitboxes.** Collision boxes are deliberately smaller than the
 sprites — roughly two thirds of the player's width — so threading a gap at
 400 km/h feels tight but never cheap.
+
+## Regenerating the art
+
+```bash
+# Slice a generated grid sheet into per-sprite PNGs, in reading order.
+~/.claude/skills/sprite-gen/.venv/bin/python3 tools/slice-sheet.py \
+  tools/sheets/vehicles-4x4.png player,yellow,blue,cyan,truck,fuel,oil,puddle,\
+rock,explosion0,explosion1,explosion2,explosion3,explosion4,tree,flag
+```
+
+Generating a whole grid in one pass is far faster than one call per sprite and
+keeps the style consistent, since every icon is drawn together.
 
 ## Credit
 
